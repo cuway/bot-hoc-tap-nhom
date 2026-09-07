@@ -1,18 +1,9 @@
 import os
 import shutil
-import tempfile
 import streamlit as st
+import google.generativeai as genai
 from pypdf import PdfReader
 import docx
-
-# Các thư viện xử lý RAG & Vector Database
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.documents import Document
 
 # ----------------- CẤU HÌNH TRANG WEB -----------------
 st.set_page_config(
@@ -22,216 +13,172 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Thư mục lưu trữ cố định kho tài liệu
+# Thư mục lưu trữ tài liệu
 DATA_DIR = os.path.join(os.path.dirname(__file__), "uploaded_docs")
-CHROMA_DIR = os.path.join(os.path.dirname(__file__), "chroma_db")
 os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(CHROMA_DIR, exist_ok=True)
 
-# ----------------- HÀM TIỆN ÍCH ĐỌC FILE -----------------
+# ----------------- TIỆN ÍCH ĐỌC VĂN BẢN -----------------
 def extract_text_from_file(file_path, file_name):
-    """Đọc nội dung văn bản từ các định dạng PDF, DOCX, TXT kèm thông tin trang/vị trí."""
-    docs = []
+    """Trích xuất nội dung văn bản kèm thông tin trang."""
+    results = []
     ext = os.path.splitext(file_name)[1].lower()
 
-    if ext == ".pdf":
-        reader = PdfReader(file_path)
-        for page_idx, page in enumerate(reader.pages):
-            text = page.extract_text() or ""
-            if text.strip():
-                docs.append(Document(
-                    page_content=text,
-                    metadata={"source": file_name, "page": page_idx + 1}
-                ))
-    elif ext in [".docx", ".doc"]:
-        doc = docx.Document(file_path)
-        full_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
-        if full_text.strip():
-            docs.append(Document(
-                page_content=full_text,
-                metadata={"source": file_name, "page": 1}
-            ))
-    elif ext in [".txt", ".md"]:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read()
-            if text.strip():
-                docs.append(Document(
-                    page_content=text,
-                    metadata={"source": file_name, "page": 1}
-                ))
-    return docs
+    try:
+        if ext == ".pdf":
+            reader = PdfReader(file_path)
+            for page_idx, page in enumerate(reader.pages):
+                text = page.extract_text() or ""
+                if text.strip():
+                    results.append(f"--- [Tài liệu: {file_name} | Trang {page_idx + 1}] ---\n{text.strip()}")
+        elif ext in [".docx", ".doc"]:
+            doc = docx.Document(file_path)
+            full_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+            if full_text.strip():
+                results.append(f"--- [Tài liệu: {file_name}] ---\n{full_text.strip()}")
+        elif ext in [".txt", ".md"]:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+                if text.strip():
+                    results.append(f"--- [Tài liệu: {file_name}] ---\n{text.strip()}")
+    except Exception as e:
+        st.warning(f"Không thể đọc file {file_name}: {str(e)}")
 
-def get_vectorstore(api_key):
-    """Khởi tạo hoặc tải kho vector ChromaDB đã có sẵn trên máy."""
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
-        google_api_key=api_key
-    )
-    return Chroma(
-        persist_directory=CHROMA_DIR,
-        embedding_function=embeddings
-    )
+    return "\n\n".join(results)
+
+def get_all_knowledge_text():
+    """Đọc toàn bộ văn bản của tất cả tài liệu hiện có trong kho."""
+    files = os.listdir(DATA_DIR)
+    combined = []
+    for f in files:
+        path = os.path.join(DATA_DIR, f)
+        if os.path.isfile(path):
+            text = extract_text_from_file(path, f)
+            if text:
+                combined.append(text)
+    return "\n\n".join(combined)
 
 # ----------------- THANH BÊN (SIDEBAR): KHO TÀI LIỆU NHÓM -----------------
 with st.sidebar:
-    st.header("📂 Kho Tài Liệu Của Nhóm")
-    
+    st.header("📂 Kho Tài Liệu Nhóm")
+
     # 1. Quản lý Gemini API Key
-    # Tự động đọc từ biến môi trường nếu có, nếu chưa thì cho phép nhập
-    env_api_key = os.environ.get("GEMINI_API_KEY", "")
+    api_key = os.environ.get("GEMINI_API_KEY", "")
     if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
-        env_api_key = st.secrets["GEMINI_API_KEY"]
-        
-    if env_api_key:
-        api_key = env_api_key
+        api_key = st.secrets["GEMINI_API_KEY"]
+
+    if api_key:
         st.success("✅ Đã kết nối Gemini API")
     else:
         api_key = st.text_input(
             "🔑 Nhập Google Gemini API Key:",
             type="password",
             placeholder="AIzaSy...",
-            help="Lấy khóa miễn phí tại: https://aistudio.google.com/"
+            help="Lấy miễn phí tại: https://aistudio.google.com/"
         )
 
     st.markdown("---")
-    
+
     # 2. Upload tài liệu vào kho chung
     st.subheader("📤 Thêm tài liệu mới")
     uploaded_files = st.file_uploader(
-        "Kéo thả tài liệu học tập vào đây:",
+        "Kéo thả sách, slide, bài tập vào đây:",
         type=["pdf", "docx", "txt", "md"],
-        accept_multiple_files=True,
-        help="Hỗ trợ sách giáo trình, slide bài giảng dạng PDF, Word hoặc Text."
+        accept_multiple_files=True
     )
 
     if st.button("➕ Nạp vào Kho Dữ Liệu", type="primary", use_container_width=True):
-        if not api_key:
-            st.error("⚠️ Vui lòng nhập Gemini API Key trước khi nạp tài liệu!")
-        elif not uploaded_files:
+        if not uploaded_files:
             st.warning("Vui lòng chọn ít nhất một tệp tài liệu.")
         else:
-            with st.spinner("Đang xử lý và ghi nhớ tài liệu vào kho..."):
-                all_docs = []
+            with st.spinner("Đang lưu trữ tài liệu vào kho..."):
+                count = 0
                 for up_file in uploaded_files:
                     save_path = os.path.join(DATA_DIR, up_file.name)
                     with open(save_path, "wb") as f:
                         f.write(up_file.getbuffer())
-
-                    docs = extract_text_from_file(save_path, up_file.name)
-                    all_docs.extend(docs)
-
-                if all_docs:
-                    # Chia nhỏ văn bản để AI dễ tra cứu
-                    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-                    chunks = splitter.split_documents(all_docs)
-
-                    vectorstore = get_vectorstore(api_key)
-                    vectorstore.add_documents(chunks)
-                    vectorstore.persist()
-                    st.success(f"🎉 Đã thêm thành công {len(uploaded_files)} tài liệu vào kho!")
-                    st.rerun()
-                else:
-                    st.warning("Không tìm thấy nội dung văn bản hợp lệ trong các file vừa chọn.")
+                    count += 1
+                st.success(f"🎉 Đã thêm thành công {count} tài liệu vào kho!")
+                st.rerun()
 
     st.markdown("---")
 
-    # 3. Hiển thị danh sách tài liệu hiện có trong kho
+    # 3. Danh sách tài liệu trong kho
     st.subheader("📑 Tài liệu hiện có trong kho:")
-    existing_files = os.listdir(DATA_DIR)
+    existing_files = [f for f in os.listdir(DATA_DIR) if os.path.isfile(os.path.join(DATA_DIR, f))]
     if existing_files:
         for f in existing_files:
             st.markdown(f"- 📄 **{f}**")
-        
+
         st.markdown("")
-        # Nút dọn dẹp kho dữ liệu nếu nhóm muốn bắt đầu môn học mới
-        if st.button("🗑️ Xóa toàn bộ kho tài liệu", help="Xóa tất cả tài liệu hiện tại để bắt đầu môn mới"):
+        if st.button("🗑️ Xóa toàn bộ kho tài liệu", help="Làm trống kho tài liệu khi bắt đầu môn học mới"):
             shutil.rmtree(DATA_DIR, ignore_errors=True)
-            shutil.rmtree(CHROMA_DIR, ignore_errors=True)
             os.makedirs(DATA_DIR, exist_ok=True)
-            os.makedirs(CHROMA_DIR, exist_ok=True)
             st.warning("Đã làm trống kho tài liệu.")
             st.rerun()
     else:
-        st.info("Chưa có tài liệu nào trong kho. Hãy tải file lên ở phía trên!")
+        st.info("Chưa có tài liệu nào. Hãy tải tài liệu ở trên!")
 
 # ----------------- KHU VỰC CHAT CHÍNH -----------------
-st.title("🎓 Trợ Lý Học Tập AI - Nhóm Học Sinh / Sinh Viên")
-st.caption("Tra cứu giáo trình, tóm tắt bài giảng, giải đáp thắc mắc bài tập dựa trên kho tài liệu của nhóm.")
+st.title("🎓 Trợ Lý Học Tập AI - Nhóm Học Tập")
+st.caption("Tra cứu giáo trình, giải đáp bài tập và tóm tắt bài giảng dựa trên kho dữ liệu của nhóm.")
 
 # Khởi tạo lịch sử chat
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = [
-        {"role": "assistant", "content": "Chào bạn! Mình là trợ lý học tập của nhóm. Bạn cần tra cứu hoặc thắc mắc phần nào trong tài liệu cứ hỏi mình nhé! ✨"}
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "assistant", "content": "Chào bạn! Mình là trợ lý AI của nhóm. Bạn cần hỏi phần nào trong tài liệu cứ nhắn mình nhé! ✨"}
     ]
 
-# Hiển thị các tin nhắn đã trò chuyện
-for msg in st.session_state.chat_history:
+# Hiển thị lịch sử chat
+for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Xử lý khi thành viên gửi câu hỏi
-user_input = st.chat_input("Hỏi AI về bất kỳ nội dung nào trong tài liệu...")
+# Nhận câu hỏi từ sinh viên
+user_query = st.chat_input("Hỏi AI về bất kỳ nội dung nào trong tài liệu học tập...")
 
-if user_input:
-    # 1. Kiểm tra API Key & Kho dữ liệu
+if user_query:
     if not api_key:
-        st.warning("⚠️ Vui lòng nhập Gemini API Key ở cột bên trái để bắt đầu chat.")
+        st.warning("⚠️ Chưa có Gemini API Key. Vui lòng cấu hình ở cột bên trái.")
     elif not existing_files:
-        st.warning("⚠️ Kho tài liệu của nhóm đang trống! Hãy tải tài liệu học tập lên ở cột bên trái trước.")
+        st.warning("⚠️ Kho tài liệu đang trống. Bạn hãy tải tài liệu lên ở cột bên trái trước nhé!")
     else:
-        # 2. Hiển thị câu hỏi của sinh viên
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        # Hiển thị câu hỏi của học sinh
+        st.session_state.messages.append({"role": "user", "content": user_query})
         with st.chat_message("user"):
-            st.markdown(user_input)
+            st.markdown(user_query)
 
-        # 3. AI tìm kiếm tài liệu và trả lời
+        # Trả lời
         with st.chat_message("assistant"):
-            with st.spinner("Đang tra cứu kho tài liệu nhóm..."):
+            with st.spinner("AI đang đọc tài liệu và suy nghĩ câu trả lời..."):
                 try:
-                    vectorstore = get_vectorstore(api_key)
-                    retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+                    genai.configure(api_key=api_key)
                     
-                    llm = ChatGoogleGenerativeAI(
-                        model="gemini-1.5-flash",
-                        google_api_key=api_key,
-                        temperature=0.2
+                    # Lấy toàn bộ tài liệu trong kho
+                    knowledge_base_text = get_all_knowledge_text()
+
+                    system_instruction = (
+                        "Bạn là một gia sư/trợ lý học tập thông minh và tận tâm cho một nhóm sinh viên.\n"
+                        "Dưới đây là toàn bộ KHO TÀI LIỆU HỌC TẬP của nhóm:\n"
+                        "=======================\n"
+                        f"{knowledge_base_text}\n"
+                        "=======================\n\n"
+                        "NGUYÊN TẮC TRẢ LỜI:\n"
+                        "1. Chỉ trả lời dựa trên thông tin trong kho tài liệu trên. Trả lời bằng tiếng Việt rõ ràng, dễ hiểu, logic.\n"
+                        "2. Nếu tài liệu không có thông tin, hãy thành thật trả lời: 'Tài liệu hiện tại của nhóm chưa đề cập đến phần này.' Tuyệt đối không tự bịa đặt.\n"
+                        "3. BẮT BUỘC TRÍCH DẪN NGUỒN: Cuối câu trả lời, hãy ghi rõ trích dẫn từ tài liệu nào và trang số mấy (ví dụ: '📌 Nguồn: Slide_Bai1.pdf - Trang 5')."
                     )
 
-                    system_prompt = (
-                        "Bạn là trợ lý học tập thân thiện và am hiểu cho một nhóm sinh viên.\n"
-                        "Nhiệm vụ của bạn là giải đáp câu hỏi của các bạn dựa trên các đoạn tài liệu được cung cấp dưới đây.\n\n"
-                        "Nguyên tắc trả lời:\n"
-                        "1. Trả lời bằng tiếng Việt rõ ràng, dễ hiểu, logic, dùng các gạch đầu dòng nếu cần diễn giải.\n"
-                        "2. Chỉ trả lời dựa trên thông tin có trong tài liệu. Nếu tài liệu không nhắc đến, hãy trả lời thật lòng rằng: 'Tài liệu nhóm hiện tại chưa đề cập đến nội dung này.' Không tự ý bịa đặt thông tin.\n"
-                        "3. Luôn chỉ rõ kiến thức lấy từ tài liệu nào và trang nào.\n\n"
-                        "Tài liệu tham khảo:\n{context}"
+                    model = genai.GenerativeModel(
+                        model_name="gemini-1.5-flash",
+                        system_instruction=system_instruction
                     )
 
-                    prompt = ChatPromptTemplate.from_messages([
-                        ("system", system_prompt),
-                        ("human", "{input}")
-                    ])
+                    # Tạo hội thoại kèm ngữ cảnh
+                    response = model.generate_content(user_query)
+                    answer_text = response.text
 
-                    question_answer_chain = create_stuff_documents_chain(llm, prompt)
-                    rag_chain = create_retrieval_chain(retriever, question_answer_chain)
-
-                    response = rag_chain.invoke({"input": user_input})
-                    answer = response["answer"]
-
-                    # Thu thập trích dẫn nguồn
-                    sources = []
-                    for doc in response.get("context", []):
-                        src = doc.metadata.get("source", "Tài liệu")
-                        page = doc.metadata.get("page", 1)
-                        ref = f"📄 **{src}** (Trang {page})"
-                        if ref not in sources:
-                            sources.append(ref)
-
-                    if sources:
-                        answer += "\n\n---\n**📌 Nguồn tài liệu tham khảo:**\n" + "\n".join([f"- {s}" for s in sources])
-
-                    st.markdown(answer)
-                    st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                    st.markdown(answer_text)
+                    st.session_state.messages.append({"role": "assistant", "content": answer_text})
 
                 except Exception as e:
-                    st.error(f"Đã xảy ra lỗi khi tra cứu: {str(e)}")
+                    st.error(f"Đã xảy ra lỗi: {str(e)}")
