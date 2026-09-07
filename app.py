@@ -57,6 +57,33 @@ def get_all_knowledge_text():
                 combined.append(text)
     return "\n\n".join(combined)
 
+def find_working_model(api_key):
+    """Tự động phát hiện model Gemini khả dụng trên tài khoản của bạn."""
+    try:
+        genai.configure(api_key=api_key)
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # Danh sách ưu tiên theo thứ tự
+        preferences = [
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-latest",
+            "gemini-2.0-flash",
+            "gemini-1.5-flash-001",
+            "gemini-1.5-flash-002",
+            "gemini-1.5-pro",
+            "gemini-pro"
+        ]
+        
+        for pref in preferences:
+            for m in models:
+                if pref in m:
+                    return m
+        if models:
+            return models[0]
+    except Exception:
+        pass
+    return "gemini-1.5-flash-latest"
+
 # ----------------- THANH BÊN (SIDEBAR): KHO TÀI LIỆU NHÓM -----------------
 with st.sidebar:
     st.header("📂 Kho Tài Liệu Nhóm")
@@ -149,9 +176,12 @@ if user_query:
 
         # Trả lời
         with st.chat_message("assistant"):
-            with st.spinner("AI đang đọc tài liệu và suy nghĩ câu trả lời..."):
+            with st.spinner("AI đang tra cứu tài liệu và suy nghĩ câu trả lời..."):
                 try:
                     genai.configure(api_key=api_key)
+                    
+                    # Tự động chọn model khả dụng tốt nhất
+                    chosen_model = find_working_model(api_key)
                     
                     # Lấy toàn bộ tài liệu trong kho
                     knowledge_base_text = get_all_knowledge_text()
@@ -165,15 +195,15 @@ if user_query:
                         "NGUYÊN TẮC TRẢ LỜI:\n"
                         "1. Chỉ trả lời dựa trên thông tin trong kho tài liệu trên. Trả lời bằng tiếng Việt rõ ràng, dễ hiểu, logic.\n"
                         "2. Nếu tài liệu không có thông tin, hãy thành thật trả lời: 'Tài liệu hiện tại của nhóm chưa đề cập đến phần này.' Tuyệt đối không tự bịa đặt.\n"
-                        "3. BẮT BUỘC TRÍCH DẪN NGUỒN: Cuối câu trả lời, hãy ghi rõ trích dẫn từ tài liệu nào và trang số mấy (ví dụ: '📌 Nguồn: Slide_Bai1.pdf - Trang 5')."
+                        "3. BẮT BUỘC TRÍCH DẪN NGUỒN: Cuối câu trả lời, hãy ghi rõ trích dẫn từ tài liệu nào và trang số mấy (ví dụ: '📌 Nguồn: GT Lập trình căn bản.pdf - Trang 12')."
                     )
 
                     model = genai.GenerativeModel(
-                        model_name="gemini-1.5-flash",
+                        model_name=chosen_model,
                         system_instruction=system_instruction
                     )
 
-                    # Tạo hội thoại kèm ngữ cảnh
+                    # Gửi câu hỏi và sinh câu trả lời
                     response = model.generate_content(user_query)
                     answer_text = response.text
 
