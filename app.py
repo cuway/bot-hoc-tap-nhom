@@ -57,33 +57,6 @@ def get_all_knowledge_text():
                 combined.append(text)
     return "\n\n".join(combined)
 
-def find_working_model(api_key):
-    """Tự động phát hiện model Gemini khả dụng trên tài khoản của bạn."""
-    try:
-        genai.configure(api_key=api_key)
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # Danh sách ưu tiên theo thứ tự
-        preferences = [
-            "gemini-1.5-flash",
-            "gemini-1.5-flash-latest",
-            "gemini-2.0-flash",
-            "gemini-1.5-flash-001",
-            "gemini-1.5-flash-002",
-            "gemini-1.5-pro",
-            "gemini-pro"
-        ]
-        
-        for pref in preferences:
-            for m in models:
-                if pref in m:
-                    return m
-        if models:
-            return models[0]
-    except Exception:
-        pass
-    return "gemini-1.5-flash-latest"
-
 # ----------------- THANH BÊN (SIDEBAR): KHO TÀI LIỆU NHÓM -----------------
 with st.sidebar:
     st.header("📂 Kho Tài Liệu Nhóm")
@@ -103,9 +76,21 @@ with st.sidebar:
             help="Lấy miễn phí tại: https://aistudio.google.com/"
         )
 
+    # 2. Cho phép người dùng tùy chọn Model (Flash hoặc Pro)
+    model_choice = st.selectbox(
+        "🤖 Chọn mô hình AI:",
+        options=[
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+            "gemini-2.0-flash"
+        ],
+        index=0,
+        help="Bản Flash: Phản hồi cực nhanh, miễn phí 100%. Bản Pro: Suy luận chuyên sâu hơn."
+    )
+
     st.markdown("---")
 
-    # 2. Upload tài liệu vào kho chung
+    # 3. Upload tài liệu vào kho chung
     st.subheader("📤 Thêm tài liệu mới")
     uploaded_files = st.file_uploader(
         "Kéo thả sách, slide, bài tập vào đây:",
@@ -129,7 +114,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # 3. Danh sách tài liệu trong kho
+    # 4. Danh sách tài liệu trong kho
     st.subheader("📑 Tài liệu hiện có trong kho:")
     existing_files = [f for f in os.listdir(DATA_DIR) if os.path.isfile(os.path.join(DATA_DIR, f))]
     if existing_files:
@@ -147,7 +132,7 @@ with st.sidebar:
 
 # ----------------- KHU VỰC CHAT CHÍNH -----------------
 st.title("🎓 Trợ Lý Học Tập AI - Nhóm Học Tập")
-st.caption("Tra cứu giáo trình, giải đáp bài tập và tóm tắt bài giảng dựa trên kho dữ liệu của nhóm.")
+st.caption(f"Đang sử dụng mô hình: **{model_choice}** | Tra cứu giáo trình và bài giảng của nhóm.")
 
 # Khởi tạo lịch sử chat
 if "messages" not in st.session_state:
@@ -176,12 +161,9 @@ if user_query:
 
         # Trả lời
         with st.chat_message("assistant"):
-            with st.spinner("AI đang tra cứu tài liệu và suy nghĩ câu trả lời..."):
+            with st.spinner(f"AI ({model_choice}) đang đọc tài liệu và trả lời..."):
                 try:
                     genai.configure(api_key=api_key)
-                    
-                    # Tự động chọn model khả dụng tốt nhất
-                    chosen_model = find_working_model(api_key)
                     
                     # Lấy toàn bộ tài liệu trong kho
                     knowledge_base_text = get_all_knowledge_text()
@@ -199,11 +181,10 @@ if user_query:
                     )
 
                     model = genai.GenerativeModel(
-                        model_name=chosen_model,
+                        model_name=model_choice,
                         system_instruction=system_instruction
                     )
 
-                    # Gửi câu hỏi và sinh câu trả lời
                     response = model.generate_content(user_query)
                     answer_text = response.text
 
@@ -211,4 +192,11 @@ if user_query:
                     st.session_state.messages.append({"role": "assistant", "content": answer_text})
 
                 except Exception as e:
-                    st.error(f"Đã xảy ra lỗi: {str(e)}")
+                    err_msg = str(e)
+                    if "429" in err_msg:
+                        st.error(
+                            f"⚠️ Mô hình **{model_choice}** đang tạm thời hết lượt yêu cầu (Quota limit). "
+                            "Bạn hãy thử chọn **gemini-1.5-flash** ở menu bên trái xem nhé (bản Flash có hạn mức cực lớn và phản hồi nhanh hơn)!"
+                        )
+                    else:
+                        st.error(f"Đã xảy ra lỗi: {err_msg}")
