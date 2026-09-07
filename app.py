@@ -17,7 +17,7 @@ st.set_page_config(
 DATA_DIR = os.path.join(os.path.dirname(__file__), "uploaded_docs")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# ----------------- TIỆN ÍCH ĐỌC VĂN BẢN -----------------
+# ----------------- TIỆN ÍCH ĐỌC VĂN BẢN (CÓ BỘ NHỚ ĐỆM TỐC ĐỘ CAO) -----------------
 def extract_text_from_file(file_path, file_name):
     """Trích xuất nội dung văn bản kèm thông tin trang."""
     results = []
@@ -45,8 +45,9 @@ def extract_text_from_file(file_path, file_name):
 
     return "\n\n".join(results)
 
+@st.cache_data(show_spinner=False)
 def get_all_knowledge_text():
-    """Đọc toàn bộ văn bản của tất cả tài liệu hiện có trong kho."""
+    """Đọc toàn bộ văn bản (được lưu trong RAM để không phải đọc lại ổ cứng mỗi lần hỏi)."""
     files = os.listdir(DATA_DIR)
     combined = []
     for f in files:
@@ -57,8 +58,9 @@ def get_all_knowledge_text():
                 combined.append(text)
     return "\n\n".join(combined)
 
+@st.cache_data(show_spinner=False, ttl=3600)
 def get_live_models(api_key):
-    """Tự động hỏi Google danh sách các model thực tế đang hoạt động trên tài khoản của bạn."""
+    """Lấy danh sách các model khả dụng từ Google (lưu đệm để không phải gọi lại liên tục)."""
     try:
         genai.configure(api_key=api_key)
         live_list = []
@@ -100,15 +102,14 @@ with st.sidebar:
         index=0
     )
 
-    # 3. Chế độ trả lời (Linh hoạt hay Nghiêm ngặt)
+    # 3. Chế độ trả lời
     chat_mode = st.radio(
         "🎯 Chế độ trả lời:",
         options=[
             "🌐 Linh hoạt (Ưu tiên tài liệu + Cho phép hỏi ngoài lề)",
             "📚 Nghiêm ngặt (Chỉ trả lời trong tài liệu)"
         ],
-        index=0,
-        help="Linh hoạt: Vừa trả lời theo giáo trình có trích dẫn, vừa trả lời được các câu hỏi mở rộng, đời sống, viết code ngoài sách."
+        index=0
     )
 
     st.markdown("---")
@@ -132,6 +133,7 @@ with st.sidebar:
                     with open(save_path, "wb") as f:
                         f.write(up_file.getbuffer())
                     count += 1
+                get_all_knowledge_text.clear()  # Xóa bộ nhớ đệm cũ để nạp tài liệu mới
                 st.success(f"🎉 Đã thêm thành công {count} tài liệu vào kho!")
                 st.rerun()
 
@@ -148,6 +150,7 @@ with st.sidebar:
         if st.button("🗑️ Xóa toàn bộ kho tài liệu", help="Làm trống kho tài liệu khi bắt đầu môn học mới"):
             shutil.rmtree(DATA_DIR, ignore_errors=True)
             os.makedirs(DATA_DIR, exist_ok=True)
+            get_all_knowledge_text.clear()
             st.warning("Đã làm trống kho tài liệu.")
             st.rerun()
     else:
@@ -180,49 +183,52 @@ if user_query:
         with st.chat_message("user"):
             st.markdown(user_query)
 
-        # Trả lời
+        # Trả lời với hiệu ứng gõ chữ trực tiếp (Streaming - siêu nhanh)
         with st.chat_message("assistant"):
-            with st.spinner(f"AI ({model_choice}) đang suy nghĩ câu trả lời..."):
-                try:
-                    genai.configure(api_key=api_key)
-                    
-                    # Lấy tài liệu trong kho (nếu có)
-                    knowledge_base_text = get_all_knowledge_text()
+            try:
+                genai.configure(api_key=api_key)
+                
+                # Lấy tài liệu từ bộ nhớ RAM siêu tốc
+                knowledge_base_text = get_all_knowledge_text()
 
-                    if "Linh hoạt" in chat_mode:
-                        # Chế độ thông minh linh hoạt: Kết hợp tài liệu + kiến thức ngoài lề
-                        system_instruction = (
-                            "Bạn là một gia sư/trợ lý học tập thông minh, thân thiện cho một nhóm học sinh/sinh viên.\n\n"
-                            "Dưới đây là KHO TÀI LIỆU HỌC TẬP của nhóm (nếu có):\n"
-                            "=======================\n"
-                            f"{knowledge_base_text}\n"
-                            "=======================\n\n"
-                            "NGUYÊN TẮC TRẢ LỜI (CHẾ ĐỘ LINH HOẠT):\n"
-                            "1. NẾU CÂU HỎI LIÊN QUAN ĐẾN TÀI LIỆU:\n"
-                            "   - Hãy ưu tiên giải thích dựa trên tài liệu được cung cấp.\n"
-                            "   - BẮT BUỘC trích dẫn nguồn ở cuối (ví dụ: '📌 Nguồn: GT Lập trình căn bản.pdf - Trang 15').\n\n"
-                            "2. NẾU CÂU HỎI HỎI NGOÀI LỀ, MỞ RỘNG HOẶC TÀI LIỆU CHƯA CÓ:\n"
-                            "   - Hãy thoải mái dùng vốn kiến thức sâu rộng của bạn để giải thích chi tiết, đưa ra ví dụ code, tư vấn phương pháp học tập hoặc trò chuyện bình thường.\n"
-                            "   - Ghi chú nhẹ ở cuối: '(💡 Thông tin mở rộng ngoài giáo trình nhóm)' để sinh viên dễ phân biệt."
-                        )
-                    else:
-                        # Chế độ nghiêm ngặt: Chỉ trả lời trong giáo trình
-                        system_instruction = (
-                            "Bạn là trợ lý học tập cho sinh viên. Chỉ trả lời dựa trên kho tài liệu dưới đây:\n"
-                            f"{knowledge_base_text}\n\n"
-                            "Nguyên tắc: Nếu tài liệu không có thông tin, hãy thông báo tài liệu chưa đề cập, không tự trả lời."
-                        )
-
-                    model = genai.GenerativeModel(
-                        model_name=model_choice,
-                        system_instruction=system_instruction
+                if "Linh hoạt" in chat_mode:
+                    system_instruction = (
+                        "Bạn là một gia sư/trợ lý học tập thông minh, thân thiện cho một nhóm học sinh/sinh viên.\n\n"
+                        "Dưới đây là KHO TÀI LIỆU HỌC TẬP của nhóm (nếu có):\n"
+                        "=======================\n"
+                        f"{knowledge_base_text}\n"
+                        "=======================\n\n"
+                        "NGUYÊN TẮC TRẢ LỜI (CHẾ ĐỘ LINH HOẠT):\n"
+                        "1. NẾU CÂU HỎI LIÊN QUAN ĐẾN TÀI LIỆU:\n"
+                        "   - Hãy ưu tiên giải thích dựa trên tài liệu được cung cấp.\n"
+                        "   - BẮT BUỘC trích dẫn nguồn ở cuối (ví dụ: '📌 Nguồn: GT Lập trình căn bản.pdf - Trang 15').\n\n"
+                        "2. NẾU CÂU HỎI HỎI NGOÀI LỀ, MỞ RỘNG HOẶC TÀI LIỆU CHƯA CÓ:\n"
+                        "   - Hãy dùng vốn kiến thức của bạn để giải thích chi tiết, ngắn gọn, dễ hiểu.\n"
+                        "   - Ghi chú nhẹ ở cuối: '(💡 Thông tin mở rộng ngoài giáo trình nhóm)'."
+                    )
+                else:
+                    system_instruction = (
+                        "Bạn là trợ lý học tập cho sinh viên. Chỉ trả lời dựa trên kho tài liệu dưới đây:\n"
+                        f"{knowledge_base_text}\n\n"
+                        "Nguyên tắc: Nếu tài liệu không có thông tin, hãy thông báo tài liệu chưa đề cập, không tự trả lời."
                     )
 
-                    response = model.generate_content(user_query)
-                    answer_text = response.text
+                model = genai.GenerativeModel(
+                    model_name=model_choice,
+                    system_instruction=system_instruction
+                )
 
-                    st.markdown(answer_text)
-                    st.session_state.messages.append({"role": "assistant", "content": answer_text})
+                # Sinh câu trả lời theo thời gian thực (Streaming)
+                response = model.generate_content(user_query, stream=True)
+                
+                def stream_chunks():
+                    for chunk in response:
+                        if chunk.text:
+                            yield chunk.text
 
-                except Exception as e:
-                    st.error(f"Đã xảy ra lỗi: {str(e)}")
+                # Chữ chạy ra màn hình ngay lập tức như ChatGPT
+                answer_text = st.write_stream(stream_chunks)
+                st.session_state.messages.append({"role": "assistant", "content": answer_text})
+
+            except Exception as e:
+                st.error(f"Đã xảy ra lỗi: {str(e)}")
