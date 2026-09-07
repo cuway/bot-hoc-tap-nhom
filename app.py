@@ -57,6 +57,24 @@ def get_all_knowledge_text():
                 combined.append(text)
     return "\n\n".join(combined)
 
+def get_live_models(api_key):
+    """Tự động hỏi Google danh sách các model thực tế đang hoạt động trên tài khoản của bạn."""
+    try:
+        genai.configure(api_key=api_key)
+        live_list = []
+        for m in genai.list_models():
+            if "generateContent" in m.supported_generation_methods:
+                name = m.name.replace("models/", "")
+                live_list.append(name)
+        if live_list:
+            # Ưu tiên đưa các model flash (như gemini-3.6-flash) lên đầu bảng
+            live_list.sort(key=lambda x: (0 if "3.6-flash" in x else (1 if "flash" in x else 2), x))
+            return live_list
+    except Exception:
+        pass
+    # Mặc định theo gợi ý mới nhất của Google
+    return ["gemini-3.6-flash", "gemini-1.5-flash", "gemini-2.0-flash"]
+
 # ----------------- THANH BÊN (SIDEBAR): KHO TÀI LIỆU NHÓM -----------------
 with st.sidebar:
     st.header("📂 Kho Tài Liệu Nhóm")
@@ -76,16 +94,13 @@ with st.sidebar:
             help="Lấy miễn phí tại: https://aistudio.google.com/"
         )
 
-    # 2. Cho phép người dùng tùy chọn Model (Flash hoặc Pro)
+    # 2. Danh sách Model lấy trực tiếp từ Google
+    available_models = get_live_models(api_key) if api_key else ["gemini-3.6-flash"]
     model_choice = st.selectbox(
-        "🤖 Chọn mô hình AI:",
-        options=[
-            "gemini-1.5-flash",
-            "gemini-1.5-pro",
-            "gemini-2.0-flash"
-        ],
+        "🤖 Chọn mô hình AI đang hỗ trợ:",
+        options=available_models,
         index=0,
-        help="Bản Flash: Phản hồi cực nhanh, miễn phí 100%. Bản Pro: Suy luận chuyên sâu hơn."
+        help="Danh sách các mô hình đang trực tiếp hoạt động trên tài khoản của bạn."
     )
 
     st.markdown("---")
@@ -192,11 +207,4 @@ if user_query:
                     st.session_state.messages.append({"role": "assistant", "content": answer_text})
 
                 except Exception as e:
-                    err_msg = str(e)
-                    if "429" in err_msg:
-                        st.error(
-                            f"⚠️ Mô hình **{model_choice}** đang tạm thời hết lượt yêu cầu (Quota limit). "
-                            "Bạn hãy thử chọn **gemini-1.5-flash** ở menu bên trái xem nhé (bản Flash có hạn mức cực lớn và phản hồi nhanh hơn)!"
-                        )
-                    else:
-                        st.error(f"Đã xảy ra lỗi: {err_msg}")
+                    st.error(f"Đã xảy ra lỗi: {str(e)}")
