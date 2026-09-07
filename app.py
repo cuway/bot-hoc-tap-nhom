@@ -67,12 +67,10 @@ def get_live_models(api_key):
                 name = m.name.replace("models/", "")
                 live_list.append(name)
         if live_list:
-            # Ưu tiên đưa các model flash (như gemini-3.6-flash) lên đầu bảng
             live_list.sort(key=lambda x: (0 if "3.6-flash" in x else (1 if "flash" in x else 2), x))
             return live_list
     except Exception:
         pass
-    # Mặc định theo gợi ý mới nhất của Google
     return ["gemini-3.6-flash", "gemini-1.5-flash", "gemini-2.0-flash"]
 
 # ----------------- THANH BÊN (SIDEBAR): KHO TÀI LIỆU NHÓM -----------------
@@ -97,15 +95,25 @@ with st.sidebar:
     # 2. Danh sách Model lấy trực tiếp từ Google
     available_models = get_live_models(api_key) if api_key else ["gemini-3.6-flash"]
     model_choice = st.selectbox(
-        "🤖 Chọn mô hình AI đang hỗ trợ:",
+        "🤖 Chọn mô hình AI:",
         options=available_models,
+        index=0
+    )
+
+    # 3. Chế độ trả lời (Linh hoạt hay Nghiêm ngặt)
+    chat_mode = st.radio(
+        "🎯 Chế độ trả lời:",
+        options=[
+            "🌐 Linh hoạt (Ưu tiên tài liệu + Cho phép hỏi ngoài lề)",
+            "📚 Nghiêm ngặt (Chỉ trả lời trong tài liệu)"
+        ],
         index=0,
-        help="Danh sách các mô hình đang trực tiếp hoạt động trên tài khoản của bạn."
+        help="Linh hoạt: Vừa trả lời theo giáo trình có trích dẫn, vừa trả lời được các câu hỏi mở rộng, đời sống, viết code ngoài sách."
     )
 
     st.markdown("---")
 
-    # 3. Upload tài liệu vào kho chung
+    # 4. Upload tài liệu vào kho chung
     st.subheader("📤 Thêm tài liệu mới")
     uploaded_files = st.file_uploader(
         "Kéo thả sách, slide, bài tập vào đây:",
@@ -129,7 +137,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # 4. Danh sách tài liệu trong kho
+    # 5. Danh sách tài liệu trong kho
     st.subheader("📑 Tài liệu hiện có trong kho:")
     existing_files = [f for f in os.listdir(DATA_DIR) if os.path.isfile(os.path.join(DATA_DIR, f))]
     if existing_files:
@@ -147,12 +155,12 @@ with st.sidebar:
 
 # ----------------- KHU VỰC CHAT CHÍNH -----------------
 st.title("🎓 Trợ Lý Học Tập AI - Nhóm Học Tập")
-st.caption(f"Đang sử dụng mô hình: **{model_choice}** | Tra cứu giáo trình và bài giảng của nhóm.")
+st.caption(f"Đang sử dụng mô hình: **{model_choice}** | Chế độ: **{chat_mode.split('(')[0].strip()}**")
 
 # Khởi tạo lịch sử chat
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Chào bạn! Mình là trợ lý AI của nhóm. Bạn cần hỏi phần nào trong tài liệu cứ nhắn mình nhé! ✨"}
+        {"role": "assistant", "content": "Chào bạn! Mình là trợ lý AI của nhóm. Bạn có thể hỏi bất kỳ nội dung nào trong tài liệu hoặc kiến thức mở rộng bên ngoài nhé! ✨"}
     ]
 
 # Hiển thị lịch sử chat
@@ -161,13 +169,11 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 # Nhận câu hỏi từ sinh viên
-user_query = st.chat_input("Hỏi AI về bất kỳ nội dung nào trong tài liệu học tập...")
+user_query = st.chat_input("Hỏi AI về tài liệu hoặc bất kỳ kiến thức ngoài lề nào...")
 
 if user_query:
     if not api_key:
         st.warning("⚠️ Chưa có Gemini API Key. Vui lòng cấu hình ở cột bên trái.")
-    elif not existing_files:
-        st.warning("⚠️ Kho tài liệu đang trống. Bạn hãy tải tài liệu lên ở cột bên trái trước nhé!")
     else:
         # Hiển thị câu hỏi của học sinh
         st.session_state.messages.append({"role": "user", "content": user_query})
@@ -176,24 +182,36 @@ if user_query:
 
         # Trả lời
         with st.chat_message("assistant"):
-            with st.spinner(f"AI ({model_choice}) đang đọc tài liệu và trả lời..."):
+            with st.spinner(f"AI ({model_choice}) đang suy nghĩ câu trả lời..."):
                 try:
                     genai.configure(api_key=api_key)
                     
-                    # Lấy toàn bộ tài liệu trong kho
+                    # Lấy tài liệu trong kho (nếu có)
                     knowledge_base_text = get_all_knowledge_text()
 
-                    system_instruction = (
-                        "Bạn là một gia sư/trợ lý học tập thông minh và tận tâm cho một nhóm sinh viên.\n"
-                        "Dưới đây là toàn bộ KHO TÀI LIỆU HỌC TẬP của nhóm:\n"
-                        "=======================\n"
-                        f"{knowledge_base_text}\n"
-                        "=======================\n\n"
-                        "NGUYÊN TẮC TRẢ LỜI:\n"
-                        "1. Chỉ trả lời dựa trên thông tin trong kho tài liệu trên. Trả lời bằng tiếng Việt rõ ràng, dễ hiểu, logic.\n"
-                        "2. Nếu tài liệu không có thông tin, hãy thành thật trả lời: 'Tài liệu hiện tại của nhóm chưa đề cập đến phần này.' Tuyệt đối không tự bịa đặt.\n"
-                        "3. BẮT BUỘC TRÍCH DẪN NGUỒN: Cuối câu trả lời, hãy ghi rõ trích dẫn từ tài liệu nào và trang số mấy (ví dụ: '📌 Nguồn: GT Lập trình căn bản.pdf - Trang 12')."
-                    )
+                    if "Linh hoạt" in chat_mode:
+                        # Chế độ thông minh linh hoạt: Kết hợp tài liệu + kiến thức ngoài lề
+                        system_instruction = (
+                            "Bạn là một gia sư/trợ lý học tập thông minh, thân thiện cho một nhóm học sinh/sinh viên.\n\n"
+                            "Dưới đây là KHO TÀI LIỆU HỌC TẬP của nhóm (nếu có):\n"
+                            "=======================\n"
+                            f"{knowledge_base_text}\n"
+                            "=======================\n\n"
+                            "NGUYÊN TẮC TRẢ LỜI (CHẾ ĐỘ LINH HOẠT):\n"
+                            "1. NẾU CÂU HỎI LIÊN QUAN ĐẾN TÀI LIỆU:\n"
+                            "   - Hãy ưu tiên giải thích dựa trên tài liệu được cung cấp.\n"
+                            "   - BẮT BUỘC trích dẫn nguồn ở cuối (ví dụ: '📌 Nguồn: GT Lập trình căn bản.pdf - Trang 15').\n\n"
+                            "2. NẾU CÂU HỎI HỎI NGOÀI LỀ, MỞ RỘNG HOẶC TÀI LIỆU CHƯA CÓ:\n"
+                            "   - Hãy thoải mái dùng vốn kiến thức sâu rộng của bạn để giải thích chi tiết, đưa ra ví dụ code, tư vấn phương pháp học tập hoặc trò chuyện bình thường.\n"
+                            "   - Ghi chú nhẹ ở cuối: '(💡 Thông tin mở rộng ngoài giáo trình nhóm)' để sinh viên dễ phân biệt."
+                        )
+                    else:
+                        # Chế độ nghiêm ngặt: Chỉ trả lời trong giáo trình
+                        system_instruction = (
+                            "Bạn là trợ lý học tập cho sinh viên. Chỉ trả lời dựa trên kho tài liệu dưới đây:\n"
+                            f"{knowledge_base_text}\n\n"
+                            "Nguyên tắc: Nếu tài liệu không có thông tin, hãy thông báo tài liệu chưa đề cập, không tự trả lời."
+                        )
 
                     model = genai.GenerativeModel(
                         model_name=model_choice,
